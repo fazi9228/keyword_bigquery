@@ -25,6 +25,8 @@ zip -r lambda-layer.zip python/
 # Compatible runtime: Python 3.11
 ```
 
+**Note**: If you encounter issues with the layer size, consider using a Docker container deployment instead (see Alternative Deployment below).
+
 ### 2. Create Lambda Function
 
 **Console:**
@@ -47,7 +49,12 @@ zip lambda-function.zip main.py
 
 **Environment Variables:**
 
-⚠️ **IMPORTANT**: The `GCP_SERVICE_ACCOUNT_JSON` value will be provided separately via secure channel.
+⚠️ **IMPORTANT**: The `GCP_SERVICE_ACCOUNT_JSON` value is provided separately via secure channel (not in this Git repo for security reasons).
+
+When you receive the service account JSON:
+1. Convert it to a single-line string (remove all line breaks)
+2. Paste the entire JSON string into the Lambda environment variable
+3. Format should be: `{"type":"service_account","project_id":"...","private_key":"...",...}`
 
 ```
 GCP_PROJECT_ID=keyword-planner-etl
@@ -69,7 +76,8 @@ GCP_SERVICE_ACCOUNT_JSON=<paste service account JSON here as single-line string>
 - Target: Lambda function `google-trends-etl`
 
 **For testing, use:**
-- `rate(5 minutes)` - runs every 5 minutes
+- `rate(10 minutes)` - runs every 10 minutes (minimum recommended due to rate limits)
+- **Important**: Disable the test rule after confirming it works to avoid hitting API rate limits
 
 ### 5. Test the Function
 
@@ -99,7 +107,20 @@ pepperstone, exness, ic markets, xm, tmgm, fbs, hfm, fx pro, vantage, qrs
 Check CloudWatch Logs:
 - AWS Console → CloudWatch → Log groups → `/aws/lambda/google-trends-etl`
 
+## Important Notes
+
+⚠️ **Rate Limiting**: The pytrends library has strict rate limits. **Do NOT run the function multiple times in quick succession** or you'll get temporarily blocked by Google (429 errors). The scheduled weekly run is sufficient.
+
+⚠️ **Testing**: When testing, wait at least 10 minutes between test runs to avoid rate limit issues.
+
+⚠️ **Service Account Key**: The GCP service account JSON key is provided separately via secure channel (not in Git for security). You'll need to paste it into the Lambda environment variable `GCP_SERVICE_ACCOUNT_JSON`.
+
 ## Troubleshooting
+
+**Rate limit errors (429 Too Many Requests):**
+- Wait 10-30 minutes before retrying
+- Don't run the function manually if the scheduled run already executed
+- Consider increasing the `time.sleep(2)` delay in the code if issues persist
 
 **Timeout errors:**
 - Increase Lambda timeout (max 15 minutes)
@@ -108,8 +129,8 @@ Check CloudWatch Logs:
 - Increase Lambda memory allocation
 
 **BigQuery authentication errors:**
-- Verify `GCP_SERVICE_ACCOUNT_JSON` environment variable is set correctly
-- Ensure service account has BigQuery permissions
+- Verify `GCP_SERVICE_ACCOUNT_JSON` environment variable is set correctly (should be a single-line JSON string)
+- Ensure service account has BigQuery Data Editor permissions
 
 **No new data loaded:**
 - Normal if data already exists in BigQuery
@@ -117,6 +138,21 @@ Check CloudWatch Logs:
 
 ## Security Notes
 
-- Service account JSON is stored as environment variable (consider migrating to AWS Secrets Manager for production)
+- **Service account JSON is NOT in this Git repo** - it will be provided separately via secure channel (encrypted email or password manager)
+- Service account key is stored as Lambda environment variable (consider migrating to AWS Secrets Manager for production)
 - Never commit `service-account-key.json` to Git
-- Rotate service account keys regularly
+- Rotate service account keys regularly (every 90 days recommended)
+
+## Alternative Deployment (Docker Container)
+
+If the Lambda Layer approach has issues (file size, dependency conflicts), you can deploy using a Docker container:
+
+```dockerfile
+FROM public.ecr.aws/lambda/python:3.11
+COPY requirements.txt ${LAMBDA_TASK_ROOT}
+RUN pip install --no-cache-dir -r requirements.txt
+COPY main.py ${LAMBDA_TASK_ROOT}
+CMD ["main.lambda_handler"]
+```
+
+Then build and push to ECR, and create Lambda function from the container image.
